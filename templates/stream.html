@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Istanbul Stream {{ stream_number }}</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        #player-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+        }
+    </style>
+</head>
+<body>
+    <div id="player-container">
+        <div id="bradmax-player" style="position: absolute; top: 0; bottom: 0; left: 0; right: 0;"></div>
+    </div>
+
+    <!-- Use the original bradmax player script from the website -->
+    <script src="https://istanbuluseyret.ibb.gov.tr/wp-content/plugins/bradmax-player/assets/js/default_player.js"></script>
+    
+    <script type="text/javascript">
+        // This is exactly the same initialization code as on the original site
+        function bradmaxPlayerInit() {
+            var bradmaxPlayerConfig = {
+                "dataProvider": {
+                    "source": [{
+                        "url": "{{ stream_url }}"
+                    }]
+                },
+                "mute": true
+            };
+            
+            var element = document.getElementById("bradmax-player");
+            var player = window.bradmax.player.create(element, bradmaxPlayerConfig);
+            
+            // Back compatibility.
+            if (!window.player) {
+                window.player = player;
+            }
+            
+            // Add error handling and auto-refresh
+            player.addEventListener('error', function(event) {
+                console.error('Player error:', event);
+                // Automatically refresh after error
+                setTimeout(function() {
+                    refreshPlayer();
+                }, 5000);
+            });
+            
+            // Also set up periodic checks
+            setInterval(function() {
+                if (player && !player.isPlaying()) {
+                    console.log('Player not playing, refreshing...');
+                    refreshPlayer();
+                }
+            }, 30000);
+            
+            window.refreshPlayer = function() {
+                if (player) {
+                    player.destroy();
+                }
+                setTimeout(function() {
+                    bradmaxPlayerInit();
+                }, 1000);
+            };
+            
+            // Expose player to parent window for external control
+            window.bradmaxPlayer = player;
+        }
+        
+        if (window.bradmax && window.bradmax.player) {
+            bradmaxPlayerInit();
+        } else {
+            window.addEventListener('load', bradmaxPlayerInit);
+        }
+    </script>
+</body>
+</html> 
