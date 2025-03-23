@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Istanbul CCTV Streams</title>
+    <title>Istanbul Live Camera Streams</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
     <style>
@@ -26,13 +26,13 @@
 </head>
 <body>
     <div class="container mt-4">
-        <h1 class="text-center mb-4">Istanbul CCTV Live Streams</h1>
+        <h1 class="text-center mb-4">Istanbul Live Camera Streams</h1>
         
         <div class="row">
             <div class="col-md-4">
                 <div class="card mb-4">
                     <div class="card-header">
-                        <h5>Saraçhane (Stream 1)</h5>
+                        <h5 id="title-stream1">Saraçhane</h5>
                         <span id="status-stream1" class="badge bg-success">Active</span>
                     </div>
                     <div class="card-body p-0">
@@ -49,7 +49,7 @@
             <div class="col-md-4">
                 <div class="card mb-4">
                     <div class="card-header">
-                        <h5>Saraçhane (Stream 2)</h5>
+                        <h5 id="title-stream2">Beyazit</h5>
                         <span id="status-stream2" class="badge bg-success">Active</span>
                     </div>
                     <div class="card-body p-0">
@@ -66,7 +66,7 @@
             <div class="col-md-4">
                 <div class="card mb-4">
                     <div class="card-header">
-                        <h5>Saraçhane (Stream 3)</h5>
+                        <h5 id="title-stream3">Sultanahmet</h5>
                         <span id="status-stream3" class="badge bg-success">Active</span>
                     </div>
                     <div class="card-body p-0">
@@ -106,6 +106,23 @@
         let streamCheckInterval;
         
         document.addEventListener('DOMContentLoaded', function() {
+            // Set up event listener for messages from the iframes
+            window.addEventListener('message', function(event) {
+                if (event.data === 'streamError') {
+                    // Find which iframe sent the message
+                    const iframes = document.querySelectorAll('iframe');
+                    for (let i = 0; i < iframes.length; i++) {
+                        if (iframes[i].contentWindow === event.source) {
+                            // Extract stream number from iframe ID
+                            const streamNumber = iframes[i].id.replace('iframe-stream', '');
+                            console.log(`Received error message from stream ${streamNumber}`);
+                            refreshStream(streamNumber);
+                            break;
+                        }
+                    }
+                }
+            });
+            
             // Set up auto-refresh toggle
             const autoRefreshToggle = document.getElementById('autoRefreshToggle');
             autoRefreshToggle.addEventListener('change', function() {
@@ -120,6 +137,12 @@
             
             // Start automatic stream checking
             enableAutoRefresh();
+            
+            // Check streams immediately when page loads
+            setTimeout(() => {
+                checkAllStreamStatus();
+                fetchServerStreamStatus();
+            }, 3000);
         });
         
         function refreshStream(streamNumber) {
@@ -133,14 +156,14 @@
             // Get the iframe
             const iframe = document.getElementById(`iframe-stream${streamNumber}`);
             
-            // Try to call the refresh function inside the iframe
             try {
+                // First try to call the refreshPlayer function in the iframe
                 if (iframe.contentWindow && iframe.contentWindow.refreshPlayer) {
                     iframe.contentWindow.refreshPlayer();
                     setTimeout(() => {
                         statusBadge.className = 'badge bg-success';
                         statusBadge.textContent = 'Active';
-                    }, 2000);
+                    }, 3000);
                     return;
                 }
             } catch (e) {
@@ -156,8 +179,8 @@
                 setTimeout(() => {
                     statusBadge.className = 'badge bg-success';
                     statusBadge.textContent = 'Active';
-                }, 2000);
-            }, 500);
+                }, 3000);
+            }, 1000);
         }
         
         function refreshAllStreams() {
@@ -170,17 +193,58 @@
             const iframe = document.getElementById(`iframe-stream${streamNumber}`);
             
             try {
-                if (iframe.contentWindow && iframe.contentWindow.bradmaxPlayer) {
-                    const player = iframe.contentWindow.bradmaxPlayer;
-                    if (player && !player.isPlaying()) {
-                        console.log(`Stream ${streamNumber} not playing, refreshing...`);
-                        refreshStream(streamNumber);
+                // Check if iframe is accessible but be more careful about triggering refreshes
+                if (!iframe.contentWindow) {
+                    console.log(`Cannot access stream ${streamNumber} content, refreshing...`);
+                    refreshStream(streamNumber);
+                    return;
+                }
+                
+                // Try to access the video element safely without causing CORS issues
+                try {
+                    // For the HLS player, we check the video element
+                    if (iframe.contentWindow.document && iframe.contentWindow.document.getElementById('video-player')) {
+                        const videoElement = iframe.contentWindow.document.getElementById('video-player');
+                        
+                        // Check if video element exists and is not playing
+                        if (videoElement && videoElement.paused) {
+                            console.log(`Stream ${streamNumber} video is paused, refreshing...`);
+                            refreshStream(streamNumber);
+                        }
+                        
+                        // Check if error message is displayed
+                        const errorElement = iframe.contentWindow.document.getElementById('error-message');
+                        if (errorElement && errorElement.style.display === 'block') {
+                            console.log(`Stream ${streamNumber} showing error message, refreshing...`);
+                            refreshStream(streamNumber);
+                        }
+                    } 
+                    // Fall back to bradmax player check for backward compatibility
+                    else if (iframe.contentWindow.bradmaxPlayer) {
+                        const player = iframe.contentWindow.bradmaxPlayer;
+                        
+                        // Only refresh if we're confident the player is stalled
+                        if (player && typeof player.isPlaying === 'function' && !player.isPlaying()) {
+                            // Wait a bit to avoid premature refresh
+                            setTimeout(() => {
+                                if (player && typeof player.isPlaying === 'function' && !player.isPlaying()) {
+                                    console.log(`Stream ${streamNumber} confirmed not playing, refreshing...`);
+                                    refreshStream(streamNumber);
+                                }
+                            }, 5000);
+                        }
                     }
+                } catch (corsError) {
+                    // CORS errors are expected and shouldn't trigger a refresh
+                    console.log(`CORS limitation when checking stream ${streamNumber}`, corsError);
                 }
             } catch (e) {
                 console.error(`Error checking stream ${streamNumber} status:`, e);
-                // Refresh if we can't verify status
-                refreshStream(streamNumber);
+                
+                // Only refresh on serious errors, not CORS issues
+                if (!e.toString().includes('cross-origin')) {
+                    refreshStream(streamNumber);
+                }
             }
         }
         
@@ -195,10 +259,15 @@
                 clearInterval(streamCheckInterval);
             }
             
-            // Check streams every 60 seconds
+            // Check streams every 60 seconds - less frequent to avoid disruption
             streamCheckInterval = setInterval(() => {
                 checkAllStreamStatus();
             }, 60000);
+            
+            // Also fetch stream status from server less frequently
+            setInterval(() => {
+                fetchServerStreamStatus();
+            }, 90000);
         }
         
         function disableAutoRefresh() {
@@ -206,6 +275,74 @@
                 clearInterval(streamCheckInterval);
                 streamCheckInterval = null;
             }
+        }
+        
+        function fetchServerStreamStatus() {
+            fetch('/check_streams')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Server stream status:', data);
+                    
+                    // Update status indicators for all streams
+                    for (const [streamId, info] of Object.entries(data)) {
+                        if (streamId === 'meta') continue; // Skip metadata
+                        
+                        const streamNumber = info.stream_number;
+                        const statusBadge = document.getElementById(`status-stream${streamNumber}`);
+                        const titleElement = document.getElementById(`title-stream${streamNumber}`);
+                        
+                        // Update location name from URL if available
+                        if (info.url && titleElement) {
+                            // Extract camera name from URL
+                            const cameraMatch = info.url.match(/\/([^\/]+)\.stream\//);
+                            if (cameraMatch && cameraMatch[1]) {
+                                let cameraName = cameraMatch[1];
+                                
+                                // Format the camera name nicely
+                                if (cameraName === 'b_sarachane') cameraName = 'Saraçhane';
+                                else if (cameraName === 'beyazit') cameraName = 'Beyazit';
+                                else if (cameraName === 'sultanahmet') cameraName = 'Sultanahmet';
+                                else if (cameraName === 'galatakulesi') cameraName = 'Galata Tower';
+                                else if (cameraName === 'taksim') cameraName = 'Taksim Square';
+                                else if (cameraName === 'miniaturk') cameraName = 'Miniaturk';
+                                else cameraName = cameraName.charAt(0).toUpperCase() + cameraName.slice(1);
+                                
+                                titleElement.textContent = cameraName;
+                            }
+                        }
+                        
+                        if (statusBadge) {
+                            if (info.status) {
+                                statusBadge.className = 'badge bg-success';
+                                statusBadge.textContent = 'Active';
+                            } else {
+                                statusBadge.className = 'badge bg-danger';
+                                statusBadge.textContent = 'Offline';
+                            }
+                        }
+                        
+                        // If the stream was updated with a new URL, refresh it
+                        if (info.updated) {
+                            console.log(`Stream ${streamNumber} URL was updated, refreshing...`);
+                            refreshStream(streamNumber);
+                        }
+                        // Refresh any streams reported as offline
+                        else if (!info.status) {
+                            console.log(`Server reports stream ${streamNumber} offline, refreshing...`);
+                            refreshStream(streamNumber);
+                        }
+                    }
+                    
+                    // If meta data shows overall status, update the page title
+                    if (data.meta && data.meta.all_working !== undefined) {
+                        document.title = data.meta.all_working ? 
+                            'Istanbul CCTV Streams - All Online' : 
+                            'Istanbul CCTV Streams - Some Offline';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error checking server stream status:', error);
+                });
         }
     </script>
 </body>

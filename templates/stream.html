@@ -19,72 +19,206 @@
             width: 100%;
             height: 100%;
             background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        #video-player {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .error-message {
+            color: white;
+            text-align: center;
+            display: none;
+        }
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+            position: absolute;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
     </style>
+    <!-- Load hls.js for HLS streaming -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 <body>
     <div id="player-container">
-        <div id="bradmax-player" style="position: absolute; top: 0; bottom: 0; left: 0; right: 0;"></div>
+        <video id="video-player" controls autoplay muted playsinline></video>
+        <div id="loading-spinner" class="loading-spinner"></div>
+        <div id="error-message" class="error-message">
+            Stream unavailable. Attempting to reconnect...
+        </div>
     </div>
 
-    <!-- Use the original bradmax player script from the website -->
-    <script src="https://istanbuluseyret.ibb.gov.tr/wp-content/plugins/bradmax-player/assets/js/default_player.js"></script>
-    
     <script type="text/javascript">
-        // This is exactly the same initialization code as on the original site
-        function bradmaxPlayerInit() {
-            var bradmaxPlayerConfig = {
-                "dataProvider": {
-                    "source": [{
-                        "url": "{{ stream_url }}"
-                    }]
-                },
-                "mute": true
-            };
+        const videoElement = document.getElementById('video-player');
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const errorMessage = document.getElementById('error-message');
+        const streamUrl = "{{ stream_url }}";
+        let hls = null;
+        let retryCount = 0;
+        let maxRetries = 5;
+        let retryTimeout = null;
+        
+        // Function to initialize the HLS player
+        function initPlayer() {
+            // Show loading spinner
+            loadingSpinner.style.display = 'block';
+            errorMessage.style.display = 'none';
             
-            var element = document.getElementById("bradmax-player");
-            var player = window.bradmax.player.create(element, bradmaxPlayerConfig);
-            
-            // Back compatibility.
-            if (!window.player) {
-                window.player = player;
+            // If an HLS instance already exists, destroy it
+            if (hls !== null) {
+                hls.destroy();
+                hls = null;
             }
             
-            // Add error handling and auto-refresh
-            player.addEventListener('error', function(event) {
-                console.error('Player error:', event);
-                // Automatically refresh after error
-                setTimeout(function() {
-                    refreshPlayer();
-                }, 5000);
-            });
-            
-            // Also set up periodic checks
-            setInterval(function() {
-                if (player && !player.isPlaying()) {
-                    console.log('Player not playing, refreshing...');
-                    refreshPlayer();
-                }
-            }, 30000);
-            
-            window.refreshPlayer = function() {
-                if (player) {
-                    player.destroy();
-                }
-                setTimeout(function() {
-                    bradmaxPlayerInit();
-                }, 1000);
-            };
-            
-            // Expose player to parent window for external control
-            window.bradmaxPlayer = player;
+            // Check if HLS is supported natively
+            if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+                // Native HLS support (Safari)
+                videoElement.src = streamUrl;
+                videoElement.addEventListener('loadedmetadata', function() {
+                    loadingSpinner.style.display = 'none';
+                    videoElement.play();
+                });
+            } else if (Hls.isSupported()) {
+                // Use hls.js for browsers that don't natively support HLS
+                hls = new Hls({
+                    maxBufferLength: 30,
+                    maxMaxBufferLength: 60,
+                    manifestLoadingTimeOut: 10000,
+                    manifestLoadingMaxRetry: 3,
+                    levelLoadingTimeOut: 10000,
+                    levelLoadingMaxRetry: 3
+                });
+                
+                // Bind HLS to the video element
+                hls.attachMedia(videoElement);
+                
+                // Load the stream
+                hls.loadSource(streamUrl);
+                
+                // Handle HLS events
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    loadingSpinner.style.display = 'none';
+                    videoElement.play();
+                    retryCount = 0; // Reset retry count on successful load
+                });
+                
+                // Error handling
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    console.error('HLS error:', data);
+                    
+                    if (data.fatal) {
+                        switch(data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                console.log('Network error, trying to recover...');
+                                showErrorMessage();
+                                retryStream();
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                console.log('Media error, trying to recover...');
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                console.log('Unrecoverable error, trying to reinitialize...');
+                                showErrorMessage();
+                                retryStream();
+                                break;
+                        }
+                    }
+                });
+            } else {
+                // HLS is not supported at all
+                errorMessage.textContent = 'Your browser does not support HLS streaming.';
+                errorMessage.style.display = 'block';
+                loadingSpinner.style.display = 'none';
+            }
         }
         
-        if (window.bradmax && window.bradmax.player) {
-            bradmaxPlayerInit();
-        } else {
-            window.addEventListener('load', bradmaxPlayerInit);
+        // Retry stream after error
+        function retryStream() {
+            // Clear any existing timeouts
+            if (retryTimeout) {
+                clearTimeout(retryTimeout);
+            }
+            
+            retryCount++;
+            
+            if (retryCount <= maxRetries) {
+                console.log(`Retry attempt ${retryCount} of ${maxRetries}`);
+                retryTimeout = setTimeout(() => {
+                    initPlayer();
+                }, 2000 * retryCount); // Increasing backoff time
+            } else {
+                console.log('Max retries reached. Refreshing the page...');
+                // After max retries, we'll reload the entire iframe from the parent
+                window.parent.postMessage('streamError', '*');
+                
+                // Still try to restart after a longer delay
+                retryTimeout = setTimeout(() => {
+                    retryCount = 0;
+                    initPlayer();
+                }, 10000);
+            }
         }
+        
+        // Show error message
+        function showErrorMessage() {
+            errorMessage.style.display = 'block';
+            loadingSpinner.style.display = 'none';
+        }
+        
+        // Video element event listeners
+        videoElement.addEventListener('error', function(e) {
+            console.error('Video error:', e);
+            showErrorMessage();
+            retryStream();
+        });
+        
+        videoElement.addEventListener('playing', function() {
+            console.log('Video is playing');
+            loadingSpinner.style.display = 'none';
+            errorMessage.style.display = 'none';
+        });
+        
+        videoElement.addEventListener('waiting', function() {
+            console.log('Video is buffering');
+            loadingSpinner.style.display = 'block';
+        });
+        
+        videoElement.addEventListener('stalled', function() {
+            console.log('Video is stalled');
+            showErrorMessage();
+            retryStream();
+        });
+        
+        // Expose refresh method for parent window
+        window.refreshPlayer = function() {
+            console.log('Manual refresh requested');
+            retryCount = 0;
+            initPlayer();
+        };
+        
+        // Initialize player when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            initPlayer();
+        });
+        
+        // Periodically check if video is actually playing
+        setInterval(function() {
+            if (videoElement.paused && !videoElement.ended) {
+                console.log('Video is paused unexpectedly, attempting to restart');
+                retryStream();
+            }
+        }, 30000);
     </script>
 </body>
 </html> 
